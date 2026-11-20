@@ -1429,6 +1429,8 @@ def lan_ip():
 
 @app.on_event("startup")
 def startup():
+    if os.getenv("RENDER") and not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is required on Render; configure a persistent PostgreSQL database.")
     init()
 
 if __name__ == "__main__":
