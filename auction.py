@@ -1,5 +1,6 @@
 # auction.py — RPS IPL Auction Platform (single file, zero CLI during auction)
-import os, io, re, csv, json, sqlite3, datetime, threading, socket, webbrowser
+import os, io, re, csv, json, sqlite3, datetime, threading, socket, webbrowser, base64, secrets
+from fastapi import Request, Response
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
@@ -16,11 +17,34 @@ CFG = {"purse":120.0,"min_players":18,"max_players":25,
        "min_indian":14,"max_overseas":8,"min_spend_pct":0.75}
 # ─────────────────────────────────────────────────────────────
 
+DATABASE_URL = os.getenv("DATABASE_URL")
 DB = Path(__file__).parent / "auction.db"
 LOCK = threading.Lock()
 app = FastAPI(title="RPS Auction")
 
+class PostgresConnection:
+    """Small adapter preserving the app's existing ?-placeholder SQL."""
+    def __init__(self):
+        import psycopg
+        from psycopg.rows import dict_row
+        self.raw = psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=True)
+
+    def execute(self, sql, params=()):
+        statement = sql.strip()
+        if statement.upper() == "BEGIN IMMEDIATE":
+            self.raw.execute("BEGIN")
+            return self.raw.execute("SELECT pg_advisory_xact_lock(8675309)")
+        if statement.upper().startswith("INSERT OR REPLACE INTO UNSOLD"):
+            sql = re.sub(r"INSERT OR REPLACE INTO", "INSERT INTO", sql, count=1, flags=re.I)
+            sql = sql.rstrip().rstrip(";") + " ON CONFLICT (player_name) DO UPDATE SET ts=EXCLUDED.ts"
+        return self.raw.execute(sql.replace("?", "%s"), params or ())
+
+    def close(self):
+        self.raw.close()
+
 def conn():
+    if DATABASE_URL:
+        return PostgresConnection()
     c = sqlite3.connect(DB, timeout=30, isolation_level=None)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
@@ -34,6 +58,33 @@ def db():
     finally: c.close()
 
 def init():
+    if DATABASE_URL:
+        with db() as c:
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS players(
+                    id BIGSERIAL PRIMARY KEY,
+                    name TEXT NOT NULL, name_lc TEXT UNIQUE NOT NULL,
+                    role TEXT, category TEXT, batting_position TEXT,
+                    rating DOUBLE PRECISION, overseas INTEGER, base_price TEXT,
+                    bowling_style TEXT, source TEXT, ts TEXT
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS buys(
+                    id BIGSERIAL PRIMARY KEY,
+                    player_name TEXT NOT NULL, team TEXT NOT NULL,
+                    price DOUBLE PRECISION NOT NULL, is_overseas INTEGER,
+                    ts TEXT NOT NULL
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS unsold(
+                    player_name TEXT UNIQUE NOT NULL, ts TEXT NOT NULL
+                )
+            """)
+            c.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS bowling_style TEXT")
+        return
+
     with db() as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS players(
@@ -54,6 +105,36 @@ def init():
         """)
         try: c.execute("ALTER TABLE players ADD COLUMN bowling_style TEXT")
         except sqlite3.OperationalError: pass
+
+@app.middleware("http")
+async def auction_access_control(request: Request, call_next):
+    if request.url.path == "/health":
+        return await call_next(request)
+    password = os.getenv("AUCTION_PASSWORD")
+    username = os.getenv("AUCTION_USERNAME", "auction")
+    if not password and os.getenv("RENDER"):
+        return Response("Set AUCTION_PASSWORD in the service environment.", status_code=503)
+    if password:
+        header = request.headers.get("authorization", "")
+        try:
+            scheme, token = header.split(" ", 1)
+            if scheme.lower() != "basic":
+                raise ValueError("wrong auth scheme")
+            decoded = base64.b64decode(token, validate=True).decode("utf-8")
+            supplied_user, supplied_password = decoded.split(":", 1)
+        except Exception:
+            return Response("Authentication required", status_code=401,
+                            headers={"WWW-Authenticate": 'Basic realm="RPS Auction"'})
+        valid_user = secrets.compare_digest(supplied_user, username)
+        valid_password = secrets.compare_digest(supplied_password, password)
+        if not (valid_user and valid_password):
+            return Response("Invalid credentials", status_code=401,
+                            headers={"WWW-Authenticate": 'Basic realm="RPS Auction"'})
+    return await call_next(request)
+
+@app.get("/health")
+def health():
+    return {"ok": True}
 
 def now(): return datetime.datetime.now().isoformat(timespec="seconds")
 
@@ -152,8 +233,9 @@ def ocr_image(data):
     try:
         import pytesseract
         from PIL import Image
-        try: pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-        except Exception: pass
+        tesseract_cmd = os.getenv("TESSERACT_CMD")
+        if tesseract_cmd:
+            pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
         img = Image.open(io.BytesIO(data)).convert("L")
         if img.width < 1600:
             s = 1600/img.width
@@ -1345,20 +1427,11 @@ def lan_ip():
         ip = s.getsockname()[0]; s.close(); return ip
     except Exception: return "127.0.0.1"
 
-if __name__ == "__main__":
+@app.on_event("startup")
+def startup():
+    if os.getenv("RENDER") and not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is required on Render; configure a persistent PostgreSQL database.")
     init()
-    port = free_port(8000)
-    ip = lan_ip()
-    print("=" * 60)
-    print(f" RPS AUCTION PLATFORM is running")
-    print(f" Local:  http://localhost:{port}")
-    print(f" LAN:    http://{ip}:{port}   (use this on Laptop 2/3)")
-    print(f" Data:   {DB}")
-    print("=" * 60)
-    print(" Keep this window OPEN. Close it to stop the app.")
-    print("=" * 60)
-    def open_browser():
-        import time; time.sleep(1.2)
-        webbrowser.open(f"http://localhost:{port}")
-    threading.Thread(target=open_browser, daemon=True).start()
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")), log_level="info")
