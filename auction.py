@@ -83,7 +83,6 @@ def init():
                 )
             """)
             c.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS bowling_style TEXT")
-            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS buys_player_name_lc_uidx ON buys (LOWER(player_name))")
         return
 
     with db() as c:
