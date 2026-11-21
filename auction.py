@@ -11,7 +11,7 @@ import uvicorn
 TEAMS = ["Rising Pune Supergiant","Chennai Super Kings","Mumbai Indians",
          "Royal Challengers Bengaluru","Kolkata Knight Riders","Sunrisers Hyderabad",
          "Delhi Capitals","Rajasthan Royals","Punjab Kings","Gujarat Titans",
-         "Lucknow Super Giants","Gujarat Lions"]
+         "Lucknow Super Giants","Deccan Chargers"]
 CFG = {"purse":120.0,"min_players":18,"max_players":25,
        "min_indian":14,"max_overseas":8,"min_spend_pct":0.75}
 # ─────────────────────────────────────────────────────────────
@@ -533,8 +533,16 @@ button.sm{padding:4px 10px;font-size:11px;cursor:pointer;margin-right:4px}
 pre{background:#0d1527;padding:10px;border-radius:8px;font-size:12px;overflow:auto;max-height:200px;color:#8b98b3}
 .role-btn{border-radius:99px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid #1e2a45;background:#0d1527;color:#8b98b3;transition:all 0.2s}
 .role-btn.active{background:#ff5a5f;color:#fff;border-color:#ff5a5f}
-.team-card{cursor:pointer}
-.team-card:hover{border-color:#ff5a5f}
+.team-card {
+  cursor: pointer;
+  border-top: 4px solid var(--team-color, #64748b);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.team-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 5px 20px var(--team-glow, transparent);
+}
 
 /* Modal Styles */
 .modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:1000;display:flex;justify-content:center;align-items:center}
@@ -782,6 +790,20 @@ async function api(path, opts={}) {
 
 // ── auction ─────────────────────────────
 async function loadAuction() {
+const TEAM_COLORS = {
+  "Rising Pune Supergiant": "#6B2D91",
+  "Chennai Super Kings": "#F9CD05",
+  "Mumbai Indians": "#004BA0",
+  "Royal Challengers Bengaluru": "#D71920",
+  "Kolkata Knight Riders": "#7B2D8E",
+  "Sunrisers Hyderabad": "#F26522",
+  "Delhi Capitals": "#17479E",
+  "Rajasthan Royals": "#EA1A85",
+  "Punjab Kings": "#ED1B24",
+  "Gujarat Titans": "#1B3F5B",
+  "Lucknow Super Giants": "#00AEEF",
+  "Deccan Chargers": "#263B73"
+};
   const [state, buys, unsold] = await Promise.all([
     api('/api/state'), 
     api('/api/buys'),
@@ -797,7 +819,10 @@ async function loadAuction() {
 
   $('#teamCards').innerHTML = teamsCache.map(t => {
     const v = state[t];
-    return `<div class="card team-card" onclick="openSquadModal('${t}')">
+    const color = TEAM_COLORS[t] || "#64748b";
+    return `<div class="card team-card"
+      style="--team-color:${color};--team-glow:${color}44"
+      onclick="openSquadModal('${t}')">
       <div style="font-weight:600;font-size:13px;margin-bottom:4px">${t} <span style="font-size:10px;color:#8b98b3">(Click for Squad)</span></div>
       <div class="big">${v.remaining.toFixed(2)} Cr</div>
       <div class="muted">spent ${v.spent.toFixed(2)} · ${v.count} players · ${v.slots_left} slots left</div>
